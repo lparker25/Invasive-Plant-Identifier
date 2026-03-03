@@ -1,0 +1,19 @@
+Metadata-Version: 2.4
+Name: invasive_plant_identifier
+Version: 0.1.0
+Summary: Plant species identifier using PyTorch and Streamlit
+Author: Your Name
+Requires-Python: >=3.8
+Requires-Dist: torch>=1.13
+Requires-Dist: torchvision>=0.14
+Requires-Dist: streamlit>=1.0
+Requires-Dist: pandas>=1.0
+Requires-Dist: opencv-python>=4.0
+Requires-Dist: folium>=0.12
+Requires-Dist: pydeck>=0.8
+Requires-Dist: pillow>=8.0
+Requires-Dist: pytest>=6.0
+Dynamic: author
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary

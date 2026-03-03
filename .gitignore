@@ -2,3 +2,7 @@ __pycache__/
 data/
 model.pth
 detections.db
+__pycache__/
+data/
+model.pth
+detections.db

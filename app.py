@@ -295,10 +295,15 @@ elif mode == "Training":
     st.write("- Upload a zip file with folders organized by species (each folder is a species)")
     
     uploaded = st.file_uploader(
-        "Select training images (can be zip archive)", type=["png", "jpg", "jpeg", "zip"], accept_multiple_files=True
+        "Select training images (can be zip archive)",
+        type=["png", "jpg", "jpeg", "zip"],
+        accept_multiple_files=True,
+        key="train_upload",
     )
-    species_name = st.text_input("Species name (leave blank if uploading zip with folders)")
-    invasive_flag = st.checkbox("Mark as invasive", value=False)
+    species_name = st.text_input(
+        "Species name (leave blank if uploading zip with folders)", key="train_species_name"
+    )
+    invasive_flag = st.checkbox("Mark as invasive", value=False, key="train_invasive")
 
     st.write("---")
     st.subheader("Optional: Validation images")
@@ -355,6 +360,11 @@ elif mode == "Training":
                 st.session_state.label_manager.add_label(species_name)
                 st.session_state.database.add_species(species_name, invasive_flag)
             st.success("Images uploaded successfully!")
+
+            # clear the upload inputs so users can immediately add another species
+            st.session_state["train_upload"] = None
+            st.session_state["train_species_name"] = ""
+            st.session_state["train_invasive"] = False
     
     st.write("---")
     st.subheader("Step 2: Select species to train on")

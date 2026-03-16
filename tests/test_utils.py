@@ -103,3 +103,20 @@ def test_wipe_app_state(tmp_path):
     assert not db_path.exists()
     assert data_dir.exists() and not any(data_dir.iterdir())
 
+
+def test_create_imagefolder_datasets_from_dirs(tmp_path):
+    # build a simple train/validation directory structure
+    train_dir = tmp_path / "train"
+    val_dir = tmp_path / "val"
+    for d in (train_dir, val_dir):
+        d.mkdir()
+        for cls in ["a", "b"]:
+            cls_dir = d / cls
+            cls_dir.mkdir()
+            (cls_dir / "img.jpg").write_bytes(b"\x00")
+
+    from invasive_plant_identifier.utils import create_imagefolder_datasets_from_dirs
+    train_ds, val_ds = create_imagefolder_datasets_from_dirs(str(train_dir), str(val_dir))
+    assert len(train_ds) == 2
+    assert len(val_ds) == 2
+

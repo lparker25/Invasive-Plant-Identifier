@@ -95,6 +95,36 @@ def create_imagefolder_datasets(
     return train_dataset, val_dataset
 
 
+def create_imagefolder_datasets_from_dirs(
+    train_root: str,
+    val_root: str,
+    input_size: Tuple[int, int] = (224, 224),
+):
+    """Create torchvision datasets for a training and a separate validation directory.
+
+    Both directories must contain the same class subdirectories.
+    """
+    transform_train = transforms.Compose(
+        [
+            transforms.Resize(input_size),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
+    )
+    transform_val = transforms.Compose(
+        [
+            transforms.Resize(input_size),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
+    )
+
+    train_dataset = datasets.ImageFolder(train_root, transform=transform_train)
+    val_dataset = datasets.ImageFolder(val_root, transform=transform_val)
+    return train_dataset, val_dataset
+
+
 def wipe_app_state(
     model_path: str, label_path: str, db_path: str, data_dir: str
 ) -> None:

@@ -298,6 +298,16 @@ elif mode == "Training":
     )
     species_name = st.text_input("Species name (leave blank if uploading zip with folders)")
     invasive_flag = st.checkbox("Mark as invasive", value=False)
+
+    st.write("---")
+    st.subheader("Optional: Validation images")
+    st.write("Upload additional images that will be used as a separate validation set (will not be used for training).")
+    val_uploaded = st.file_uploader(
+        "Validation images (optional) - can be zip or image files", type=["png", "jpg", "jpeg", "zip"], accept_multiple_files=True, key="val_upload"
+    )
+    val_species_name = st.text_input(
+        "Validation species name (leave blank if uploading zip with folders)", key="val_species_name"
+    )
     
     if st.button("Upload images"):
         if not uploaded:
@@ -394,16 +404,75 @@ elif mode == "Training":
                         dst = os.path.join(tmpdir, sp)
                         if os.path.isdir(src):
                             shutil.copytree(src, dst)
-                    train_ds, val_ds = create_imagefolder_datasets(tmpdir)
 
-                    train_loader = torch.utils.data.DataLoader(train_ds, batch_size=16, shuffle=True)
-                    val_loader = torch.utils.data.DataLoader(val_ds, batch_size=16)
-                    st.write(f"Training on {len(train_ds)} images, validating on {len(val_ds)} images.")
-                    # run training
-                    with st.spinner("Training model..."):
-                        train_acc, val_acc = st.session_state.classifier.train(
-                            train_loader, val_loader, epochs=epochs
+                    if val_uploaded:
+                        from invasive_plant_identifier.utils import create_imagefolder_datasets_from_dirs
+
+                        with tempfile.TemporaryDirectory() as val_dir:
+                            for uf in val_uploaded:
+                                if uf.name.lower().endswith(".zip"):
+                                    import zipfile
+
+                                    with zipfile.ZipFile(uf) as z:
+                                        for info in z.infolist():
+                                            if info.filename.lower().endswith((".jpg", ".jpeg", ".png")):
+                                                parts = info.filename.split("/")
+                                                if len(parts) >= 2:
+                                                    spec_name = parts[0]
+                                                else:
+                                                    spec_name = val_species_name if val_species_name else "validation"
+                                                if spec_name not in selected_species:
+                                                    # ignore species not in selected training set
+                                                    continue
+                                                species_dir = os.path.join(val_dir, spec_name)
+                                                os.makedirs(species_dir, exist_ok=True)
+                                                timestamp = int(time.time() * 1000)
+                                                target = os.path.join(
+                                                    species_dir,
+                                                    f"{timestamp}_{os.path.basename(info.filename)}",
+                                                )
+                                                with z.open(info) as imgf, open(target, "wb") as out:
+                                                    out.write(imgf.read())
+                                else:
+                                    if not val_species_name:
+                                        st.warning(
+                                            f"Skipping {uf.name}: validation species name required for single images"
+                                        )
+                                        continue
+                                    if val_species_name not in selected_species:
+                                        st.warning(
+                                            f"Skipping {uf.name}: validation species '{val_species_name}' not selected for training"
+                                        )
+                                        continue
+                                    species_dir = os.path.join(val_dir, val_species_name)
+                                    os.makedirs(species_dir, exist_ok=True)
+                                    timestamp = int(time.time() * 1000)
+                                    target = os.path.join(species_dir, f"{timestamp}_{uf.name}")
+                                    with open(target, "wb") as f:
+                                        f.write(uf.read())
+
+                            train_ds, val_ds = create_imagefolder_datasets_from_dirs(tmpdir, val_dir)
+                            train_loader = torch.utils.data.DataLoader(train_ds, batch_size=16, shuffle=True)
+                            val_loader = torch.utils.data.DataLoader(val_ds, batch_size=16)
+                            st.write(
+                                f"Training on {len(train_ds)} images, validating on {len(val_ds)} images."
+                            )
+                            with st.spinner("Training model..."):
+                                train_acc, val_acc = st.session_state.classifier.train(
+                                    train_loader, val_loader, epochs=epochs
+                                )
+                    else:
+                        train_ds, val_ds = create_imagefolder_datasets(tmpdir)
+                        train_loader = torch.utils.data.DataLoader(train_ds, batch_size=16, shuffle=True)
+                        val_loader = torch.utils.data.DataLoader(val_ds, batch_size=16)
+                        st.write(
+                            f"Training on {len(train_ds)} images, validating on {len(val_ds)} images."
                         )
+                        with st.spinner("Training model..."):
+                            train_acc, val_acc = st.session_state.classifier.train(
+                                train_loader, val_loader, epochs=epochs
+                            )
+
                 st.success(f"Finished training: train_acc={train_acc:.3f}, val_acc={val_acc:.3f}")
                 st.session_state.classifier.save(MODEL_PATH)
 

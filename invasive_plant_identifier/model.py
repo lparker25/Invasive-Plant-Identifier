@@ -116,7 +116,7 @@ class PlantClassifier:
         try:
             species = self.labels.get_name(idx_val)
         except KeyError:
-            species = "unknown"
+            species = "other"
         return species, conf_val, elapsed
 
     def save(self, path: str):

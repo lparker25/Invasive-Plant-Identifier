@@ -82,7 +82,7 @@ def classify_and_log(
 
     The function applies the current classifier to the supplied image. If the
     returned confidence is below the threshold it forces the species to
-    "unknown" and sets confidence to zero. The detection is inserted into the
+    "other" and sets confidence to zero. The detection is inserted into the
     SQLite database along with timestamp, analysis time, optional GPS, and
     image filename.
 
@@ -91,7 +91,8 @@ def classify_and_log(
     """
     species, confidence, elapsed = st.session_state.classifier.predict(image)
     if confidence < threshold:
-        species = "unknown"
+        # Low confidence means we treat it as "other" (i.e., not a recognized species)
+        species = "other"
         confidence = 0.0
     # determine invasive flag
     invasive_flag = False
@@ -209,12 +210,12 @@ if mode == "Identification":
 
     st.subheader("Detection Settings")
     confidence_threshold = st.slider(
-        "Confidence threshold for species identification (lower = more 'unknown' detections)",
+        "Confidence threshold for species identification (lower = more 'other' detections)",
         min_value=0.0,
         max_value=1.0,
         value=0.95,
         step=0.05,
-        help="If model confidence is below this threshold, the plant will be marked as 'unknown'"
+        help="If model confidence is below this threshold, the plant will be marked as 'other'"
     )
 
     uploaded_files = st.file_uploader(
@@ -238,8 +239,8 @@ if mode == "Identification":
                                     gps=st.session_state.get("gps", ("N/A", "N/A")),
                                 )
                                 st.image(image, caption=f"{species} ({conf:.2f})", use_column_width=True)
-                                if species == "unknown":
-                                    st.warning(f"⚠️ {info.filename}: **UNKNOWN SPECIES** - Confidence below threshold")
+                                if species == "other":
+                                    st.warning(f"⚠️ {info.filename}: **OTHER (LOW CONFIDENCE)** - Confidence below threshold")
                                 else:
                                     st.write(f"{info.filename}: {species} ({conf:.2f}) analyzed in {elapsed:.2f}s")
             else:
@@ -251,8 +252,8 @@ if mode == "Identification":
                     gps=st.session_state.get("gps", ("N/A", "N/A")),
                 )
                 st.image(image, caption=f"{species} ({conf:.2f})", use_column_width=True)
-                if species == "unknown":
-                    st.warning(f"⚠️ **UNKNOWN SPECIES** - Confidence below threshold")
+                if species == "other":
+                    st.warning(f"⚠️ **OTHER (LOW CONFIDENCE)** - Confidence below threshold")
                 else:
                     st.write(f"Analyzed in {elapsed:.2f}s")
 
@@ -274,8 +275,8 @@ if mode == "Identification":
                     gps=st.session_state.get("gps", ("N/A", "N/A")),
                 )
                 st.image(frame, channels="BGR", caption=f"{species} ({conf:.2f})")
-                if species == "unknown":
-                    st.warning(f"⚠️ **UNKNOWN SPECIES** - Confidence below threshold")
+                if species == "other":
+                    st.warning(f"⚠️ **OTHER (LOW CONFIDENCE)** - Confidence below threshold")
                 else:
                     st.write(f"Analyzed in {elapsed:.2f}s")
             else:
@@ -569,9 +570,9 @@ elif mode == "Database":
         current = st.session_state.database.conn.execute(
             "SELECT is_invasive FROM species WHERE name = ?", (selected,)
         ).fetchone()[0]
-        is_unknown = selected == "unknown"
-        if is_unknown:
-            st.info("'unknown' species cannot be marked as invasive. It represents low-confidence detections.")
+        is_other = selected == "other"
+        if is_other:
+            st.info("'other' species cannot be marked as invasive. It represents low-confidence detections.")
         else:
             new_flag = st.checkbox("Invasive", value=bool(current))
             if st.button("Update invasive status"):
@@ -584,10 +585,10 @@ elif mode == "Database":
         st.write("**Detection Statistics**")
         # guard against missing columns
         if "species" in df.columns:
-            unknown_count = len(df[df["species"] == "unknown"])
-            known_count = len(df[df["species"] != "unknown"])
+            other_count = len(df[df["species"] == "other"])
+            known_count = len(df[df["species"] != "other"])
             st.metric("Known Species Detections", known_count)
-            st.metric("Unknown Species Detections", unknown_count)
+            st.metric("Other/Unknown Detections", other_count)
         
         show_heatmap(df)
         

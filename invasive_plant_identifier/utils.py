@@ -27,6 +27,27 @@ def sync_label_manager_with_data(label_manager, data_dir: str) -> None:
                     break
 
 
+def rebuild_label_manager_from_data(label_manager, data_dir: str) -> None:
+    """Replace the label mapping with the exact class set found in ``data_dir``.
+
+    The resulting class order matches ``torchvision.datasets.ImageFolder`` by
+    sorting valid class folder names alphabetically.
+    """
+    classes = []
+    for item in sorted(os.listdir(data_dir)):
+        path = os.path.join(data_dir, item)
+        if not os.path.isdir(path):
+            continue
+        has_image = any(
+            fname.lower().endswith((".jpg", ".jpeg", ".png")) for fname in os.listdir(path)
+        )
+        if has_image:
+            classes.append(item)
+
+    label_manager.labels = {name: idx for idx, name in enumerate(classes)}
+    label_manager._save()
+
+
 def remove_species_data(data_dir: str, species: str) -> None:
     """Delete the specified species folder and all contained images.
 

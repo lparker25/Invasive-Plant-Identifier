@@ -63,6 +63,28 @@ def test_sync_label_manager_and_training(tmp_path):
     classifier.train(train_loader, val_loader, epochs=1)
 
 
+def test_rebuild_label_manager_from_data_replaces_stale_labels(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    for sp in ["Bluebonnet", "Calyophus"]:
+        sp_dir = data_dir / sp
+        sp_dir.mkdir()
+        img = Image.new("RGB", (10, 10), color="white")
+        img.save(sp_dir / "img.jpg")
+
+    label_file = tmp_path / "labels.json"
+    lm = LabelManager(str(label_file))
+    lm.add_label("Bluebonnet")
+    lm.add_label("YFH")
+    lm.add_label("Yellow Floating Heart")
+
+    from invasive_plant_identifier.utils import rebuild_label_manager_from_data
+
+    rebuild_label_manager_from_data(lm, str(data_dir))
+
+    assert lm.labels == {"Bluebonnet": 0, "Calyophus": 1}
+
+
 def test_training_data_management(tmp_path):
     base = tmp_path / "data"
     base.mkdir()

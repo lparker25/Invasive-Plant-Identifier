@@ -405,11 +405,6 @@ elif mode == "Training":
             if st.button("Start training on selected species"):
                 st.write(f"Training model on: {', '.join(selected_species)}")
 
-                # keep labels in sync with data directory (avoids target out-of-bounds)
-                from invasive_plant_identifier.utils import sync_label_manager_with_data
-
-                sync_label_manager_with_data(st.session_state.label_manager, DATA_DIR)
-
                 # build temporary directory containing only selected species
                 import shutil, tempfile
                 with tempfile.TemporaryDirectory() as tmpdir:
@@ -419,12 +414,17 @@ elif mode == "Training":
                         if os.path.isdir(src):
                             shutil.copytree(src, dst)
 
-                    # keep labels in sync with the temporary training data
-                    sync_label_manager_with_data(st.session_state.label_manager, tmpdir)
+                    # rebuild labels from the exact temporary training dataset so
+                    # class indices match ImageFolder ordering with no stale labels
+                    from invasive_plant_identifier.utils import rebuild_label_manager_from_data
+
+                    rebuild_label_manager_from_data(st.session_state.label_manager, tmpdir)
 
                     # rebuild classifier after syncing labels so it matches available classes
                     st.session_state.classifier = PlantClassifier(
-                        st.session_state.label_manager, model_path=MODEL_PATH
+                        st.session_state.label_manager,
+                        model_path=MODEL_PATH,
+                        load_checkpoint_labels=False,
                     )
 
                     if val_uploaded:
@@ -473,12 +473,11 @@ elif mode == "Training":
                                     with open(target, "wb") as f:
                                         f.write(uf.read())
 
-                            # ensure label manager includes any validation-only species
-                            sync_label_manager_with_data(st.session_state.label_manager, val_dir)
-
                             # rebuild classifier after label sync so it matches available labels
                             st.session_state.classifier = PlantClassifier(
-                                st.session_state.label_manager, model_path=MODEL_PATH
+                                st.session_state.label_manager,
+                                model_path=MODEL_PATH,
+                                load_checkpoint_labels=False,
                             )
 
                             train_ds, val_ds = create_imagefolder_datasets_from_dirs(tmpdir, val_dir)

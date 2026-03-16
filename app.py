@@ -362,9 +362,17 @@ elif mode == "Training":
             st.success("Images uploaded successfully!")
 
             # clear the upload inputs so users can immediately add another species
-            st.session_state["train_upload"] = None
-            st.session_state["train_species_name"] = ""
-            st.session_state["train_invasive"] = False
+            try:
+                st.session_state.update(
+                    {
+                        "train_upload": None,
+                        "train_species_name": "",
+                        "train_invasive": False,
+                    }
+                )
+            except Exception:
+                # If Streamlit rejects updates in this context, ignore and continue.
+                pass
     
     st.write("---")
     st.subheader("Step 2: Select species to train on")

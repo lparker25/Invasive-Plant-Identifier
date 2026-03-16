@@ -93,3 +93,24 @@ def create_imagefolder_datasets(
     val_dataset.dataset.transform = transform_val
 
     return train_dataset, val_dataset
+
+
+def wipe_app_state(
+    model_path: str, label_path: str, db_path: str, data_dir: str
+) -> None:
+    """Wipe all persisted application state.
+
+    Removes the trained model weights, label mapping, database file, and all
+    training image data.
+
+    The caller is responsible for closing any open database connections first.
+    """
+    # delete files if they exist
+    for path in (model_path, label_path, db_path):
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+
+    wipe_training_data(data_dir)

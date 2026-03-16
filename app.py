@@ -42,6 +42,36 @@ if "database" not in st.session_state:
 
 # utility helpers ----------------------------------------------------------
 
+
+def _remove_file(path: str) -> None:
+    """Delete a file if it exists. Ignore any errors."""
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        pass
+
+
+def reset_app_state() -> None:
+    """Wipe all persisted app state and restart the Streamlit app."""
+    # close database connection before removing the file (especially on Windows)
+    db = st.session_state.get("database")
+    if db is not None:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+    # delete stored artifacts and training data
+    from invasive_plant_identifier.utils import wipe_app_state
+
+    wipe_app_state(MODEL_PATH, LABEL_PATH, DB_PATH, DATA_DIR)
+
+    # clear in-memory state and rerun
+    st.session_state.clear()
+    st.experimental_rerun()
+
+
 def classify_and_log(
     image: Image.Image,
     gps: Tuple[Any, Any] = ("N/A", "N/A"),
@@ -138,6 +168,20 @@ if "lat" in params and "lng" in params:
         st.session_state.gps = ("N/A", "N/A")
 # sidebar navigation allows switching between the main modes of the app
 mode = st.sidebar.radio("Mode", ["Identification", "Training", "Database"])
+
+# app reset / reload
+st.sidebar.markdown("---")
+if st.sidebar.button("Reload app (wipe all stored data)"):
+    st.session_state["reload_pending"] = True
+
+if st.session_state.get("reload_pending"):
+    st.sidebar.warning(
+        "⚠️ This will permanently delete training images, model weights, labels, and all database records."
+    )
+    if st.sidebar.button("Confirm reload", key="confirm_reload"):
+        reset_app_state()
+    if st.sidebar.button("Cancel", key="cancel_reload"):
+        st.session_state["reload_pending"] = False
 
 if mode == "Identification":
     st.header("Identification / Test")

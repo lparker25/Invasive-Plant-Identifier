@@ -79,3 +79,27 @@ def test_training_data_management(tmp_path):
     wipe_training_data(str(base))
     assert base.exists() and not any(base.iterdir())
 
+
+def test_wipe_app_state(tmp_path):
+    # create dummy model, labels, and db files
+    model_path = tmp_path / "model.pth"
+    label_path = tmp_path / "labels.json"
+    db_path = tmp_path / "detections.db"
+    (model_path).write_text("dummy")
+    (label_path).write_text("{}")
+    (db_path).write_text("dummy")
+
+    # create some training images
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "classA").mkdir()
+    (data_dir / "classA" / "img.jpg").write_bytes(b"\x00")
+
+    from invasive_plant_identifier.utils import wipe_app_state
+    wipe_app_state(str(model_path), str(label_path), str(db_path), str(data_dir))
+
+    assert not model_path.exists()
+    assert not label_path.exists()
+    assert not db_path.exists()
+    assert data_dir.exists() and not any(data_dir.iterdir())
+

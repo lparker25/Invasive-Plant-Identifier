@@ -17,12 +17,17 @@ def get_device() -> torch.device:
 class PlantClassifier:
     """Wrapper around a PyTorch model for plant species classification."""
 
-    def __init__(self, label_manager: LabelManager, model_path: str = None):
+    def __init__(
+        self,
+        label_manager: LabelManager,
+        model_path: str = None,
+        load_checkpoint_labels: bool = True,
+    ):
         self.labels = label_manager
         self.device = get_device()
         self.model = self._build_model()
         if model_path and os.path.exists(model_path):
-            self.load(model_path)
+            self.load(model_path, load_labels=load_checkpoint_labels)
         self.model.to(self.device)
         self.model.eval()
 
@@ -127,7 +132,7 @@ class PlantClassifier:
         }
         torch.save(state, path)
 
-    def load(self, path: str):
+    def load(self, path: str, load_labels: bool = True):
         """Load weights (and optionally labels) from disk.
 
         If the number of classes has changed, only load compatible weights
@@ -137,7 +142,7 @@ class PlantClassifier:
 
         # If the saved checkpoint carries label metadata, apply it first so
         # the model architecture is built to match the stored label set.
-        if "labels" in state:
+        if load_labels and "labels" in state:
             self.labels.labels = state["labels"]
             self.labels._save()
 

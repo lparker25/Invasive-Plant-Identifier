@@ -129,35 +129,38 @@ class PlantClassifier:
 
     def load(self, path: str):
         """Load weights (and optionally labels) from disk.
-        
+
         If the number of classes has changed, only load compatible weights
         from the feature trunk and reinitialize the final layer.
         """
         state = torch.load(path, map_location=self.device)
+
+        # If the saved checkpoint carries label metadata, apply it first so
+        # the model architecture is built to match the stored label set.
+        if "labels" in state:
+            self.labels.labels = state["labels"]
+            self.labels._save()
+
         self.model = self._build_model()
-        
         model_state = state.get("model_state", state)
-        
-        # Try to load; if sizes mismatch (e.g., due to new classes), 
+
+        # Try to load; if sizes mismatch (e.g., due to new classes),
         # load only the compatible parts
         try:
             self.model.load_state_dict(model_state)
         except RuntimeError as e:
-            # Size mismatch in final layer; load only compatible weights
             if "size mismatch" in str(e).lower():
                 # Filter out the final layer (fc.weight, fc.bias)
                 compatible_state = {
-                    k: v for k, v in model_state.items() 
-                    if not k.startswith("fc.")
+                    k: v for k, v in model_state.items() if not k.startswith("fc.")
                 }
                 self.model.load_state_dict(compatible_state, strict=False)
-                print(f"Loaded feature trunk only; final layer reinitialized due to class count change")
+                print(
+                    "Loaded feature trunk only; final layer reinitialized due to class count change"
+                )
             else:
                 raise
-        
-        if "labels" in state:
-            self.labels.labels = state["labels"]
-            self.labels._save()
+
         self.model.to(self.device)
 
 

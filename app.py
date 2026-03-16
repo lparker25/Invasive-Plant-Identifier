@@ -410,11 +410,6 @@ elif mode == "Training":
 
                 sync_label_manager_with_data(st.session_state.label_manager, DATA_DIR)
 
-                # rebuild classifier so output layer matches new num classes
-                st.session_state.classifier = PlantClassifier(
-                    st.session_state.label_manager, model_path=MODEL_PATH
-                )
-
                 # build temporary directory containing only selected species
                 import shutil, tempfile
                 with tempfile.TemporaryDirectory() as tmpdir:
@@ -423,6 +418,14 @@ elif mode == "Training":
                         dst = os.path.join(tmpdir, sp)
                         if os.path.isdir(src):
                             shutil.copytree(src, dst)
+
+                    # keep labels in sync with the temporary training data
+                    sync_label_manager_with_data(st.session_state.label_manager, tmpdir)
+
+                    # rebuild classifier after syncing labels so it matches available classes
+                    st.session_state.classifier = PlantClassifier(
+                        st.session_state.label_manager, model_path=MODEL_PATH
+                    )
 
                     if val_uploaded:
                         from invasive_plant_identifier.utils import create_imagefolder_datasets_from_dirs
@@ -469,6 +472,14 @@ elif mode == "Training":
                                     target = os.path.join(species_dir, f"{timestamp}_{uf.name}")
                                     with open(target, "wb") as f:
                                         f.write(uf.read())
+
+                            # ensure label manager includes any validation-only species
+                            sync_label_manager_with_data(st.session_state.label_manager, val_dir)
+
+                            # rebuild classifier after label sync so it matches available labels
+                            st.session_state.classifier = PlantClassifier(
+                                st.session_state.label_manager, model_path=MODEL_PATH
+                            )
 
                             train_ds, val_ds = create_imagefolder_datasets_from_dirs(tmpdir, val_dir)
                             train_loader = torch.utils.data.DataLoader(train_ds, batch_size=16, shuffle=True)

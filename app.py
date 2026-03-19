@@ -59,6 +59,14 @@ def _remove_file(path: str) -> None:
         pass
 
 
+def _rerun_app() -> None:
+    """Rerun app across Streamlit versions that use different APIs."""
+    if hasattr(st, "rerun"):
+        st.rerun()
+    else:
+        st.experimental_rerun()
+
+
 def reset_app_state() -> None:
     """Wipe all persisted app state and restart the Streamlit app."""
     # close database connection before removing the file (especially on Windows)
@@ -76,7 +84,7 @@ def reset_app_state() -> None:
 
     # clear in-memory state and rerun
     st.session_state.clear()
-    st.experimental_rerun()
+    _rerun_app()
 
 
 def classify_and_log(
@@ -553,7 +561,7 @@ elif mode == "Training":
                 except Exception:
                     pass
 
-                st.experimental_rerun()
+                _rerun_app()
     
     st.write("---")
     st.subheader("Step 2: Select species to train on")
@@ -692,7 +700,7 @@ elif mode == "Training":
                         st.success(f"Deleted {sp}")
                     except Exception as e:
                         st.error(f"Failed to delete {sp}: {e}")
-                st.experimental_rerun()
+                _rerun_app()
         if st.button("Wipe all training data"):
             confirm = st.checkbox("I understand this will delete every training image", key="wipe_confirm")
             if confirm and st.button("Confirm wipe", key="wipe_confirm_btn"):
@@ -700,7 +708,7 @@ elif mode == "Training":
                 wipe_training_data(DATA_DIR)
                 st.session_state.pending_species_flags = {}
                 st.success("All training data removed")
-                st.experimental_rerun()
+                _rerun_app()
 
 elif mode == "Database":
     st.header("Database")
@@ -786,7 +794,7 @@ elif mode == "Database":
                 for rid in ids_to_delete:
                     st.session_state.database.delete_detection(int(rid), run_id=selected_db_run_id)
                 st.success("Rows deleted")
-                st.rerun()
+                _rerun_app()
         if st.button("Export CSV"):
             tmpfile = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
             st.session_state.database.export_csv(tmpfile.name, run_id=selected_db_run_id)
@@ -849,11 +857,11 @@ elif mode == "Database":
                     st.session_state.database.clear_detections(run_id=selected_db_run_id)
                     st.session_state["db_run_wipe_pending"] = False
                     st.success("Selected run detections removed")
-                    st.experimental_rerun()
+                    _rerun_app()
             with col2:
                 if st.button("❌ Cancel", use_container_width=True, key="cancel_run_wipe"):
                     st.session_state["db_run_wipe_pending"] = False
-                    st.rerun()
+                    _rerun_app()
         
         # show confirmation only if wipe was requested
         if st.session_state.get("db_wipe_pending", False):
@@ -865,8 +873,8 @@ elif mode == "Database":
                     st.session_state["db_wipe_pending"] = False
                     st.session_state["db_run_wipe_pending"] = False
                     st.success("All detections removed from database")
-                    st.experimental_rerun()
+                    _rerun_app()
             with col2:
                 if st.button("❌ Cancel", use_container_width=True, key="cancel_wipe"):
                     st.session_state["db_wipe_pending"] = False
-                    st.rerun()
+                    _rerun_app()

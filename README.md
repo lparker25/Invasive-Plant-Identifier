@@ -11,7 +11,6 @@ SQLite database, and visualizing data on a Streamlit web dashboard.
 - **Database**: SQLite database logs each detection with timestamp, confidence,
   species name, invasive flag, and optional GPS coordinates.
 - **Dashboard**: Streamlit app provides a user-friendly interface with:
-  - Heatmap of detections on Google Maps
   - Species counts (invasive vs non-invasive)
   - Test mode for image uploads and webcam
   - Training mode for adding new species and fine-tuning the model

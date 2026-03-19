@@ -29,6 +29,7 @@ def test_database_crud(tmp_path):
     row = rows[0]
     assert row["species"] == "TestPlant"
     assert row["is_invasive"] == 1
+    assert row["run_id"] == db.get_latest_run_id()
 
     # update entry
     db.update_detection(row["id"], species="OtherPlant")
@@ -76,4 +77,89 @@ def test_database_crud(tmp_path):
     # updating the flag works
     db.update_detection(rows[0]["id"], is_correct=0)
     assert db.get_all_detections()[0]["is_correct"] == 0
+
+
+def test_run_creation_and_filtering(tmp_path):
+    db_path = tmp_path / "test_runs.db"
+    db = Database(str(db_path))
+
+    run1_id, run1_label = db.create_run(source_type="uploaded")
+    run2_id, run2_label = db.create_run(source_type="uploaded")
+
+    assert run1_label == "Run 1"
+    assert run2_label == "Run 2"
+    assert run2_id > run1_id
+
+    db.log_detection(
+        datetime="2026-03-19T10:00:00",
+        analysis_time=0.2,
+        confidence_score=0.8,
+        species="A",
+        is_invasive=False,
+        latitude="N/A",
+        longitude="N/A",
+        run_id=run1_id,
+    )
+    db.log_detection(
+        datetime="2026-03-19T10:01:00",
+        analysis_time=0.3,
+        confidence_score=0.9,
+        species="B",
+        is_invasive=True,
+        latitude="N/A",
+        longitude="N/A",
+        run_id=run2_id,
+    )
+
+    run1_rows = db.get_all_detections(run_id=run1_id)
+    run2_rows = db.get_all_detections(run_id=run2_id)
+    assert len(run1_rows) == 1
+    assert len(run2_rows) == 1
+    assert run1_rows[0]["species"] == "A"
+    assert run2_rows[0]["species"] == "B"
+
+    counts_run1 = db.get_species_counts(run_id=run1_id)
+    counts_run2 = db.get_species_counts(run_id=run2_id)
+    assert counts_run1 == [("A", 1, 0)]
+    assert counts_run2 == [("B", 1, 1)]
+
+
+def test_run_scoped_clear_and_export(tmp_path):
+    db_path = tmp_path / "test_run_clear.db"
+    db = Database(str(db_path))
+
+    run1_id, _ = db.create_run(source_type="uploaded")
+    run2_id, _ = db.create_run(source_type="uploaded")
+
+    db.log_detection(
+        datetime="2026-03-19T11:00:00",
+        analysis_time=0.15,
+        confidence_score=0.85,
+        species="A",
+        is_invasive=False,
+        latitude="N/A",
+        longitude="N/A",
+        run_id=run1_id,
+    )
+    db.log_detection(
+        datetime="2026-03-19T11:01:00",
+        analysis_time=0.25,
+        confidence_score=0.95,
+        species="B",
+        is_invasive=True,
+        latitude="N/A",
+        longitude="N/A",
+        run_id=run2_id,
+    )
+
+    export_path = tmp_path / "run1.csv"
+    db.export_csv(str(export_path), run_id=run1_id)
+    assert export_path.exists()
+    content = export_path.read_text(encoding="utf-8")
+    assert "A" in content
+    assert "B" not in content
+
+    db.clear_detections(run_id=run1_id)
+    assert db.get_all_detections(run_id=run1_id) == []
+    assert len(db.get_all_detections(run_id=run2_id)) == 1
 

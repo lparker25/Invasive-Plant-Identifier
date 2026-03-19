@@ -27,6 +27,7 @@ MODEL_PATH = "model.pth"
 LABEL_PATH = "labels.json"
 DB_PATH = "detections.db"
 DATA_DIR = "data"
+IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")
 
 # ensure data directories exist
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -38,6 +39,12 @@ if "classifier" not in st.session_state:
     st.session_state.classifier = PlantClassifier(st.session_state.label_manager, model_path=MODEL_PATH)
 if "database" not in st.session_state:
     st.session_state.database = Database(DB_PATH)
+if "pending_species_flags" not in st.session_state:
+    st.session_state.pending_species_flags = {}
+if "selected_identification_run_id" not in st.session_state:
+    st.session_state.selected_identification_run_id = st.session_state.database.get_latest_run_id()
+if "selected_db_run_id" not in st.session_state:
+    st.session_state.selected_db_run_id = st.session_state.database.get_latest_run_id()
 
 
 # utility helpers ----------------------------------------------------------
@@ -77,6 +84,7 @@ def classify_and_log(
     gps: Tuple[Any, Any] = ("N/A", "N/A"),
     threshold: float = 0.95,
     image_id: str = "N/A",
+    run_id: int | None = None,
 ) -> Tuple[str, float, float]:
     """Classify a PIL image, log the result in the database.
 
@@ -114,8 +122,186 @@ def classify_and_log(
         latitude=gps[0],
         longitude=gps[1],
         image_id=image_id,
+        run_id=run_id,
     )
     return species, confidence, elapsed
+
+
+def _snapshot_uploaded_files(uploaded_files) -> List[Tuple[str, bytes]]:
+    """Copy uploaded files into immutable in-memory blobs for repeatable runs."""
+    snapshots: List[Tuple[str, bytes]] = []
+    for uf in uploaded_files or []:
+        snapshots.append((uf.name, uf.getvalue()))
+    return snapshots
+
+
+def _process_uploaded_snapshot(
+    snapshots: List[Tuple[str, bytes]],
+    threshold: float,
+    gps: Tuple[Any, Any],
+    run_id: int,
+) -> Tuple[int, int]:
+    """Process one complete pass of uploaded files for a specific run id."""
+    import zipfile
+
+    processed_count = 0
+    low_conf_count = 0
+
+    for filename, blob in snapshots:
+        if filename.lower().endswith(".zip"):
+            with zipfile.ZipFile(io.BytesIO(blob)) as z:
+                for info in z.infolist():
+                    if info.is_dir() or not _is_image_file(info.filename):
+                        continue
+                    with z.open(info) as imgf:
+                        image = Image.open(imgf).convert("RGB")
+                        species, conf, elapsed = classify_and_log(
+                            image,
+                            threshold=threshold,
+                            image_id=info.filename,
+                            gps=gps,
+                            run_id=run_id,
+                        )
+                        st.image(image, caption=f"{species} ({conf:.2f})", use_column_width=True)
+                        if species == "other":
+                            low_conf_count += 1
+                            st.warning(
+                                f"⚠️ {info.filename}: **OTHER (LOW CONFIDENCE)** - Confidence below threshold"
+                            )
+                        else:
+                            st.write(f"{info.filename}: {species} ({conf:.2f}) analyzed in {elapsed:.2f}s")
+                        processed_count += 1
+        elif _is_image_file(filename):
+            image = Image.open(io.BytesIO(blob)).convert("RGB")
+            species, conf, elapsed = classify_and_log(
+                image,
+                threshold=threshold,
+                image_id=filename,
+                gps=gps,
+                run_id=run_id,
+            )
+            st.image(image, caption=f"{species} ({conf:.2f})", use_column_width=True)
+            if species == "other":
+                low_conf_count += 1
+                st.warning("⚠️ **OTHER (LOW CONFIDENCE)** - Confidence below threshold")
+            else:
+                st.write(f"Analyzed in {elapsed:.2f}s")
+            processed_count += 1
+
+    return processed_count, low_conf_count
+
+
+def _render_run_summary_panel(run_id: int, run_label: str) -> None:
+    """Render a compact summary for a single identification run."""
+    rows = st.session_state.database.get_all_detections(run_id=run_id)
+    if not rows:
+        st.caption(f"{run_label}: no detections yet.")
+        return
+
+    df_run = pd.DataFrame([dict(r) for r in rows])
+    total = len(df_run)
+    known = int((df_run["species"] != "other").sum()) if "species" in df_run.columns else 0
+    other = int((df_run["species"] == "other").sum()) if "species" in df_run.columns else 0
+
+    with st.expander(f"Run summary: {run_label}", expanded=False):
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total", total)
+        c2.metric("Known", known)
+        c3.metric("Other", other)
+
+        species_counts = st.session_state.database.get_species_counts(run_id=run_id)
+        if species_counts:
+            summary_df = pd.DataFrame(
+                species_counts,
+                columns=["Species", "Detections", "Invasive Detections"],
+            ).sort_values("Detections", ascending=False)
+            st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+
+def _is_image_file(filename: str) -> bool:
+    return filename.lower().endswith(IMAGE_EXTENSIONS)
+
+
+def _count_images_in_dir(path: str) -> int:
+    if not os.path.isdir(path):
+        return 0
+    return len([f for f in os.listdir(path) if _is_image_file(f)])
+
+
+def _save_uploaded_files_for_species(uploaded_files, species: str, split: str) -> int:
+    """Save uploaded image/zip content to data/<species>/<split> and return count."""
+    if not uploaded_files:
+        return 0
+
+    split_dir = os.path.join(DATA_DIR, species, split)
+    os.makedirs(split_dir, exist_ok=True)
+    saved_count = 0
+
+    for uf in uploaded_files:
+        if uf.name.lower().endswith(".zip"):
+            import zipfile
+
+            with zipfile.ZipFile(uf) as z:
+                for info in z.infolist():
+                    if info.is_dir() or not _is_image_file(info.filename):
+                        continue
+                    timestamp = time.time_ns()
+                    filename = os.path.basename(info.filename) or f"image_{saved_count}.jpg"
+                    target = os.path.join(split_dir, f"{timestamp}_{filename}")
+                    with z.open(info) as imgf, open(target, "wb") as out:
+                        out.write(imgf.read())
+                    saved_count += 1
+        elif _is_image_file(uf.name):
+            timestamp = time.time_ns()
+            target = os.path.join(split_dir, f"{timestamp}_{uf.name}")
+            with open(target, "wb") as out:
+                out.write(uf.read())
+            saved_count += 1
+
+    return saved_count
+
+
+def _copy_species_training_images(source_species_dir: str, tmp_root: str, species: str) -> int:
+    """Copy train images (or legacy flat images) into a temporary ImageFolder class dir."""
+    import shutil
+
+    train_dir = os.path.join(source_species_dir, "train")
+    src_dir = train_dir if os.path.isdir(train_dir) else source_species_dir
+    if not os.path.isdir(src_dir):
+        return 0
+
+    dst_dir = os.path.join(tmp_root, species)
+    os.makedirs(dst_dir, exist_ok=True)
+    copied = 0
+    for fname in os.listdir(src_dir):
+        if not _is_image_file(fname):
+            continue
+        shutil.copy2(os.path.join(src_dir, fname), os.path.join(dst_dir, fname))
+        copied += 1
+    if copied == 0 and os.path.isdir(dst_dir):
+        os.rmdir(dst_dir)
+    return copied
+
+
+def _copy_species_validation_images(source_species_dir: str, tmp_root: str, species: str) -> int:
+    """Copy val images from data/<species>/val into a temporary ImageFolder class dir."""
+    import shutil
+
+    src_dir = os.path.join(source_species_dir, "val")
+    if not os.path.isdir(src_dir):
+        return 0
+
+    dst_dir = os.path.join(tmp_root, species)
+    os.makedirs(dst_dir, exist_ok=True)
+    copied = 0
+    for fname in os.listdir(src_dir):
+        if not _is_image_file(fname):
+            continue
+        shutil.copy2(os.path.join(src_dir, fname), os.path.join(dst_dir, fname))
+        copied += 1
+    if copied == 0 and os.path.isdir(dst_dir):
+        os.rmdir(dst_dir)
+    return copied
 
 
 def show_heatmap(df: pd.DataFrame):
@@ -218,44 +404,68 @@ if mode == "Identification":
         help="If model confidence is below this threshold, the plant will be marked as 'other'"
     )
 
+    runs = st.session_state.database.list_runs()
+    run_ids = [int(r["run_id"]) for r in runs]
+    if st.session_state.selected_identification_run_id not in run_ids:
+        st.session_state.selected_identification_run_id = st.session_state.database.get_latest_run_id()
+
+    run_labels = {
+        int(r["run_id"]): f"{r['run_label']} (id {r['run_id']}, {r['source_type']})"
+        for r in runs
+    }
+    selected_ident_run_id = st.selectbox(
+        "Single-capture target run",
+        options=run_ids,
+        format_func=lambda rid: run_labels.get(rid, f"Run id {rid}"),
+        index=run_ids.index(st.session_state.selected_identification_run_id),
+    )
+    st.session_state.selected_identification_run_id = int(selected_ident_run_id)
+    _render_run_summary_panel(
+        st.session_state.selected_identification_run_id,
+        run_labels.get(
+            st.session_state.selected_identification_run_id,
+            f"Run {st.session_state.selected_identification_run_id}",
+        ),
+    )
+
+    run_count = st.number_input(
+        "Uploaded-image passes",
+        min_value=1,
+        max_value=20,
+        value=1,
+        step=1,
+        help="Each pass creates a new run (Run 1, Run 2, ...) and logs detections separately.",
+    )
+
     uploaded_files = st.file_uploader(
         "Choose image(s) or a zip file", type=["png", "jpg", "jpeg", "zip"], accept_multiple_files=True
     )
     if uploaded_files:
-        for uf in uploaded_files:
-            if uf.name.lower().endswith(".zip"):
-                # process zip archive as folder input
-                import zipfile
-
-                with zipfile.ZipFile(uf) as z:
-                    for info in z.infolist():
-                        if info.filename.lower().endswith((".jpg", ".jpeg", ".png")):
-                            with z.open(info) as imgf:
-                                image = Image.open(imgf).convert("RGB")
-                                species, conf, elapsed = classify_and_log(
-                                    image,
-                                    threshold=confidence_threshold,
-                                    image_id=info.filename,
-                                    gps=st.session_state.get("gps", ("N/A", "N/A")),
-                                )
-                                st.image(image, caption=f"{species} ({conf:.2f})", use_column_width=True)
-                                if species == "other":
-                                    st.warning(f"⚠️ {info.filename}: **OTHER (LOW CONFIDENCE)** - Confidence below threshold")
-                                else:
-                                    st.write(f"{info.filename}: {species} ({conf:.2f}) analyzed in {elapsed:.2f}s")
+        if st.button("Run uploaded identification passes"):
+            snapshots = _snapshot_uploaded_files(uploaded_files)
+            if not snapshots:
+                st.warning("No uploaded files available for processing.")
             else:
-                image = Image.open(uf).convert("RGB")
-                species, conf, elapsed = classify_and_log(
-                    image,
-                    threshold=confidence_threshold,
-                    image_id=uf.name,
-                    gps=st.session_state.get("gps", ("N/A", "N/A")),
+                total_processed = 0
+                for _ in range(int(run_count)):
+                    run_id, run_label = st.session_state.database.create_run(source_type="uploaded")
+                    st.session_state.selected_identification_run_id = run_id
+                    st.session_state.selected_db_run_id = run_id
+                    st.subheader(f"{run_label}")
+                    processed_count, low_conf_count = _process_uploaded_snapshot(
+                        snapshots,
+                        threshold=confidence_threshold,
+                        gps=st.session_state.get("gps", ("N/A", "N/A")),
+                        run_id=run_id,
+                    )
+                    total_processed += processed_count
+                    st.info(
+                        f"{run_label}: processed {processed_count} image(s), low-confidence detections: {low_conf_count}."
+                    )
+                    _render_run_summary_panel(run_id, run_label)
+                st.success(
+                    f"Completed {int(run_count)} run(s). Total detections logged: {total_processed}."
                 )
-                st.image(image, caption=f"{species} ({conf:.2f})", use_column_width=True)
-                if species == "other":
-                    st.warning(f"⚠️ **OTHER (LOW CONFIDENCE)** - Confidence below threshold")
-                else:
-                    st.write(f"Analyzed in {elapsed:.2f}s")
 
     st.write("---")
     st.write("**Webcam / video input**")
@@ -273,6 +483,7 @@ if mode == "Identification":
                     threshold=confidence_threshold,
                     image_id="webcam_capture",
                     gps=st.session_state.get("gps", ("N/A", "N/A")),
+                    run_id=st.session_state.selected_identification_run_id,
                 )
                 st.image(frame, channels="BGR", caption=f"{species} ({conf:.2f})")
                 if species == "other":
@@ -287,92 +498,62 @@ if mode == "Identification":
 
 elif mode == "Training":
     st.header("Training / Add Species")
-    st.write("Upload images for one or more species and fine-tune the model.")
+    st.write("Build a species dataset one species at a time, then train on selected species.")
     
-    st.subheader("Step 1: Add or organize training images")
-    st.write("You can either:")
-    st.write("- Upload images for a new species")
-    st.write("- Upload a zip file with folders organized by species (each folder is a species)")
+    st.subheader("Step 1: Save one species dataset")
+    st.write("Provide a species name, upload training images, optionally upload validation images, then click the add button.")
     
     uploaded = st.file_uploader(
-        "Select training images (can be zip archive)",
+        "Training images (image files or zip)",
         type=["png", "jpg", "jpeg", "zip"],
         accept_multiple_files=True,
         key="train_upload",
     )
     species_name = st.text_input(
-        "Species name (leave blank if uploading zip with folders)", key="train_species_name"
+        "Species name", key="train_species_name"
     )
     invasive_flag = st.checkbox("Mark as invasive", value=False, key="train_invasive")
 
     st.write("---")
     st.subheader("Optional: Validation images")
-    st.write("Upload additional images that will be used as a separate validation set (will not be used for training).")
+    st.write("These are saved with the species and used as a separate validation set during training.")
     val_uploaded = st.file_uploader(
-        "Validation images (optional) - can be zip or image files", type=["png", "jpg", "jpeg", "zip"], accept_multiple_files=True, key="val_upload"
-    )
-    val_species_name = st.text_input(
-        "Validation species name (leave blank if uploading zip with folders)", key="val_species_name"
+        "Validation images (optional)", type=["png", "jpg", "jpeg", "zip"], accept_multiple_files=True, key="val_upload"
     )
     
-    if st.button("Upload images"):
+    if st.button("Add species and clear form"):
         if not uploaded:
-            st.warning("Please provide images.")
-        elif not species_name and not any(uf.name.lower().endswith(".zip") for uf in uploaded):
-            st.warning("Please provide a species name or upload a zip file with organized folders.")
+            st.warning("Please provide training images.")
+        elif not species_name.strip():
+            st.warning("Please provide a species name.")
         else:
-            for uf in uploaded:
-                if uf.name.lower().endswith(".zip"):
-                    # zip file may contain multiple species folders
-                    import zipfile
-                    with zipfile.ZipFile(uf) as z:
-                        for info in z.infolist():
-                            if info.filename.lower().endswith((".jpg", ".jpeg", ".png")):
-                                # Extract folder/species structure
-                                parts = info.filename.split("/")
-                                if len(parts) >= 2:
-                                    spec_name = parts[0]
-                                else:
-                                    spec_name = species_name if species_name else "uploaded"
-                                
-                                species_dir = os.path.join(DATA_DIR, spec_name)
-                                os.makedirs(species_dir, exist_ok=True)
-                                timestamp = int(time.time() * 1000)
-                                target = os.path.join(species_dir, f"{timestamp}_{os.path.basename(info.filename)}")
-                                with z.open(info) as imgf, open(target, "wb") as out:
-                                    out.write(imgf.read())
-                                if spec_name not in st.session_state.label_manager.labels:
-                                    st.session_state.label_manager.add_label(spec_name)
-                                    st.session_state.database.add_species(spec_name, invasive_flag)
-                else:
-                    # single image file
-                    if not species_name:
-                        st.warning(f"Skipping {uf.name}: species name required for single images")
-                        continue
-                    species_dir = os.path.join(DATA_DIR, species_name)
-                    os.makedirs(species_dir, exist_ok=True)
-                    timestamp = int(time.time() * 1000)
-                    target = os.path.join(species_dir, f"{timestamp}_{uf.name}")
-                    with open(target, "wb") as f:
-                        f.write(uf.read())
-            
-            if species_name and species_name not in st.session_state.label_manager.labels:
-                st.session_state.label_manager.add_label(species_name)
-                st.session_state.database.add_species(species_name, invasive_flag)
-            st.success("Images uploaded successfully!")
+            clean_species = species_name.strip()
+            train_saved = _save_uploaded_files_for_species(uploaded, clean_species, "train")
+            val_saved = _save_uploaded_files_for_species(val_uploaded, clean_species, "val")
 
-            # clear the upload inputs so users can immediately add another species
-            try:
-                st.session_state.update(
-                    {
-                        "train_upload": None,
-                        "train_species_name": "",
-                        "train_invasive": False,
-                    }
+            if train_saved == 0:
+                st.warning("No valid image files were found in the training upload.")
+            else:
+                # Keep invasive flags in session until training starts.
+                st.session_state.pending_species_flags[clean_species] = bool(invasive_flag)
+                st.success(
+                    f"Saved species '{clean_species}' with {train_saved} training images and {val_saved} validation images."
                 )
-            except Exception:
-                # If Streamlit rejects updates in this context, ignore and continue.
-                pass
+
+                # Clear form inputs so users can immediately stage the next species.
+                try:
+                    st.session_state.update(
+                        {
+                            "train_upload": None,
+                            "train_species_name": "",
+                            "train_invasive": False,
+                            "val_upload": None,
+                        }
+                    )
+                except Exception:
+                    pass
+
+                st.experimental_rerun()
     
     st.write("---")
     st.subheader("Step 2: Select species to train on")
@@ -382,17 +563,23 @@ elif mode == "Training":
     if os.path.exists(DATA_DIR):
         for item in os.listdir(DATA_DIR):
             item_path = os.path.join(DATA_DIR, item)
-            if os.path.isdir(item_path) and len(os.listdir(item_path)) > 0:
-                num_images = len([f for f in os.listdir(item_path) if f.lower().endswith((".jpg", ".jpeg", ".png"))])
-                if num_images > 0:
-                    available_species.append((item, num_images))
+            if not os.path.isdir(item_path):
+                continue
+
+            train_count = _count_images_in_dir(os.path.join(item_path, "train"))
+            legacy_count = _count_images_in_dir(item_path)
+            val_count = _count_images_in_dir(os.path.join(item_path, "val"))
+            total_train = train_count if train_count > 0 else legacy_count
+
+            if total_train > 0:
+                available_species.append((item, total_train, val_count))
     
     if not available_species:
         st.info("No species with training images found. Upload some images first.")
     else:
         st.write(f"Found {len(available_species)} species with training images:")
-        for sp, count in available_species:
-            st.write(f"  - {sp}: {count} images")
+        for sp, train_count, val_count in available_species:
+            st.write(f"  - {sp}: {train_count} train images, {val_count} val images")
         
         selected_species = st.multiselect(
             "Select species to train on (all selected species will be trained together)",
@@ -408,11 +595,17 @@ elif mode == "Training":
                 # build temporary directory containing only selected species
                 import shutil, tempfile
                 with tempfile.TemporaryDirectory() as tmpdir:
+                    copied_train_counts = {}
                     for sp in selected_species:
                         src = os.path.join(DATA_DIR, sp)
-                        dst = os.path.join(tmpdir, sp)
-                        if os.path.isdir(src):
-                            shutil.copytree(src, dst)
+                        copied_train_counts[sp] = _copy_species_training_images(src, tmpdir, sp)
+
+                    no_train_species = [sp for sp, count in copied_train_counts.items() if count == 0]
+                    if no_train_species:
+                        st.error(
+                            "No training images found for: " + ", ".join(no_train_species)
+                        )
+                        st.stop()
 
                     # rebuild labels from the exact temporary training dataset so
                     # class indices match ImageFolder ordering with no stale labels
@@ -427,51 +620,23 @@ elif mode == "Training":
                         load_checkpoint_labels=False,
                     )
 
-                    if val_uploaded:
+                    # Register species in DB only when they are used for training.
+                    for sp in selected_species:
+                        is_invasive = bool(st.session_state.pending_species_flags.get(sp, False))
+                        st.session_state.database.add_species(sp, is_invasive)
+                        st.session_state.database.set_invasive(sp, is_invasive)
+
+                    species_with_val = [
+                        sp for sp in selected_species if _count_images_in_dir(os.path.join(DATA_DIR, sp, "val")) > 0
+                    ]
+
+                    if species_with_val and len(species_with_val) == len(selected_species):
                         from invasive_plant_identifier.utils import create_imagefolder_datasets_from_dirs
 
                         with tempfile.TemporaryDirectory() as val_dir:
-                            for uf in val_uploaded:
-                                if uf.name.lower().endswith(".zip"):
-                                    import zipfile
-
-                                    with zipfile.ZipFile(uf) as z:
-                                        for info in z.infolist():
-                                            if info.filename.lower().endswith((".jpg", ".jpeg", ".png")):
-                                                parts = info.filename.split("/")
-                                                if len(parts) >= 2:
-                                                    spec_name = parts[0]
-                                                else:
-                                                    spec_name = val_species_name if val_species_name else "validation"
-                                                if spec_name not in selected_species:
-                                                    # ignore species not in selected training set
-                                                    continue
-                                                species_dir = os.path.join(val_dir, spec_name)
-                                                os.makedirs(species_dir, exist_ok=True)
-                                                timestamp = int(time.time() * 1000)
-                                                target = os.path.join(
-                                                    species_dir,
-                                                    f"{timestamp}_{os.path.basename(info.filename)}",
-                                                )
-                                                with z.open(info) as imgf, open(target, "wb") as out:
-                                                    out.write(imgf.read())
-                                else:
-                                    if not val_species_name:
-                                        st.warning(
-                                            f"Skipping {uf.name}: validation species name required for single images"
-                                        )
-                                        continue
-                                    if val_species_name not in selected_species:
-                                        st.warning(
-                                            f"Skipping {uf.name}: validation species '{val_species_name}' not selected for training"
-                                        )
-                                        continue
-                                    species_dir = os.path.join(val_dir, val_species_name)
-                                    os.makedirs(species_dir, exist_ok=True)
-                                    timestamp = int(time.time() * 1000)
-                                    target = os.path.join(species_dir, f"{timestamp}_{uf.name}")
-                                    with open(target, "wb") as f:
-                                        f.write(uf.read())
+                            for sp in selected_species:
+                                src = os.path.join(DATA_DIR, sp)
+                                _copy_species_validation_images(src, val_dir, sp)
 
                             # rebuild classifier after label sync so it matches available labels
                             st.session_state.classifier = PlantClassifier(
@@ -491,6 +656,10 @@ elif mode == "Training":
                                     train_loader, val_loader, epochs=epochs
                                 )
                     else:
+                        if species_with_val:
+                            st.warning(
+                                "Some selected species are missing validation images; using automatic train/validation split instead."
+                            )
                         train_ds, val_ds = create_imagefolder_datasets(tmpdir)
                         train_loader = torch.utils.data.DataLoader(train_ds, batch_size=16, shuffle=True)
                         val_loader = torch.utils.data.DataLoader(val_ds, batch_size=16)
@@ -519,6 +688,7 @@ elif mode == "Training":
                 for sp in to_delete:
                     try:
                         remove_species_data(DATA_DIR, sp)
+                        st.session_state.pending_species_flags.pop(sp, None)
                         st.success(f"Deleted {sp}")
                     except Exception as e:
                         st.error(f"Failed to delete {sp}: {e}")
@@ -528,12 +698,41 @@ elif mode == "Training":
             if confirm and st.button("Confirm wipe", key="wipe_confirm_btn"):
                 from invasive_plant_identifier.utils import wipe_training_data
                 wipe_training_data(DATA_DIR)
+                st.session_state.pending_species_flags = {}
                 st.success("All training data removed")
                 st.experimental_rerun()
 
 elif mode == "Database":
     st.header("Database")
-    rows = st.session_state.database.get_all_detections()
+    runs = st.session_state.database.list_runs()
+    run_options = ["all"] + [int(r["run_id"]) for r in runs]
+
+    if st.session_state.selected_db_run_id not in run_options:
+        st.session_state.selected_db_run_id = st.session_state.database.get_latest_run_id()
+
+    selected_db_scope = st.selectbox(
+        "View run",
+        options=run_options,
+        format_func=lambda x: (
+            "All runs"
+            if x == "all"
+            else next(
+                (
+                    f"{r['run_label']} (id {r['run_id']}, {r['source_type']})"
+                    for r in runs
+                    if int(r["run_id"]) == int(x)
+                ),
+                f"Run id {x}",
+            )
+        ),
+        index=run_options.index(st.session_state.selected_db_run_id),
+    )
+
+    selected_db_run_id = None if selected_db_scope == "all" else int(selected_db_scope)
+    if selected_db_run_id is not None:
+        st.session_state.selected_db_run_id = selected_db_run_id
+
+    rows = st.session_state.database.get_all_detections(run_id=selected_db_run_id)
     if not rows:
         st.info("No detections yet.")
         df = pd.DataFrame()  # empty dataframe
@@ -542,7 +741,7 @@ elif mode == "Database":
         data = [dict(row) for row in rows]
         df = pd.DataFrame(data)
         # Ensure proper column order and naming
-        column_order = ["id", "datetime", "analysis_time", "confidence_score", "species", "is_invasive", "image_id", "is_correct", "latitude", "longitude"]
+        column_order = ["id", "run_id", "datetime", "analysis_time", "confidence_score", "species", "is_invasive", "image_id", "is_correct", "latitude", "longitude"]
         # only use columns that exist in the df
         df = df[[col for col in column_order if col in df.columns]]
     
@@ -574,7 +773,9 @@ elif mode == "Database":
                     # convert booleans if necessary
                     if "is_invasive" in changes:
                         changes["is_invasive"] = int(changes["is_invasive"])
-                    st.session_state.database.update_detection(int(orig["id"]), **changes)
+                    st.session_state.database.update_detection(
+                        int(orig["id"]), run_id=selected_db_run_id, **changes
+                    )
             st.success("Database updated")
         # deletion UI
         if "id" in df.columns:
@@ -583,13 +784,18 @@ elif mode == "Database":
             )
             if st.button("Delete selected rows") and ids_to_delete:
                 for rid in ids_to_delete:
-                    st.session_state.database.delete_detection(int(rid))
+                    st.session_state.database.delete_detection(int(rid), run_id=selected_db_run_id)
                 st.success("Rows deleted")
                 st.rerun()
         if st.button("Export CSV"):
             tmpfile = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
-            st.session_state.database.export_csv(tmpfile.name)
-            st.download_button("Download data", open(tmpfile.name, "rb"), file_name="detections.csv")
+            st.session_state.database.export_csv(tmpfile.name, run_id=selected_db_run_id)
+            run_suffix = "all" if selected_db_run_id is None else f"run_{selected_db_run_id}"
+            st.download_button(
+                "Download data",
+                open(tmpfile.name, "rb"),
+                file_name=f"detections_{run_suffix}.csv",
+            )
     st.write("---")
     st.subheader("Species management")
     species_list = [r[0] for r in st.session_state.database.conn.execute("SELECT name FROM species").fetchall()]
@@ -630,8 +836,24 @@ elif mode == "Database":
         st.subheader("Database maintenance")
         col1, col2 = st.columns(2)
         with col1:
+            if selected_db_run_id is not None and st.button("🧹 Clear selected run", use_container_width=True):
+                st.session_state["db_run_wipe_pending"] = True
             if st.button("🗑️ Clear all detections", use_container_width=True):
                 st.session_state["db_wipe_pending"] = True
+
+        if st.session_state.get("db_run_wipe_pending", False) and selected_db_run_id is not None:
+            st.warning("⚠️ This will delete all detections from the selected run only.")
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("✅ Yes, clear selected run", use_container_width=True, key="confirm_run_wipe"):
+                    st.session_state.database.clear_detections(run_id=selected_db_run_id)
+                    st.session_state["db_run_wipe_pending"] = False
+                    st.success("Selected run detections removed")
+                    st.experimental_rerun()
+            with col2:
+                if st.button("❌ Cancel", use_container_width=True, key="cancel_run_wipe"):
+                    st.session_state["db_run_wipe_pending"] = False
+                    st.rerun()
         
         # show confirmation only if wipe was requested
         if st.session_state.get("db_wipe_pending", False):
@@ -641,6 +863,7 @@ elif mode == "Database":
                 if st.button("✅ Yes, delete all", use_container_width=True, key="confirm_wipe"):
                     st.session_state.database.clear_detections()
                     st.session_state["db_wipe_pending"] = False
+                    st.session_state["db_run_wipe_pending"] = False
                     st.success("All detections removed from database")
                     st.experimental_rerun()
             with col2:
